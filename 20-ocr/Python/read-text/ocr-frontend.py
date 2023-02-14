@@ -24,58 +24,98 @@ credential = CognitiveServicesCredentials(cog_key)
 cv_client = ComputerVisionClient(cog_endpoint, credential)
 
 
-def read_text(file):
-    # set up the REST API endpoint and headers
-    url = endpoint + '/formrecognizer/v2.1/layout/analyze'
-    headers = {
-        'Content-Type': 'application/pdf',
-        'Ocp-Apim-Subscription-Key': subscription_key
-    }
+# function to read text from an image file
+def ocr_image(file, endpoint, subscription_key):
+    image = Image.open(file)
+    image_data = image.tobytes()
 
-    # read the file data and set up the request body
-    file_data = file.read()
-    data = file_data
+    response = requests.post(
+        url=endpoint + "/vision/v3.1-preview.3/read/analyze",
+        headers={
+            "Ocp-Apim-Subscription-Key": subscription_key,
+            "Content-Type": "application/octet-stream"
+        },
+        data=image_data
+    )
 
-    # send the request to the Form Recognizer service
-    response = requests.post(url, headers=headers, data=data)
+    operation_url = response.headers["Operation-Location"]
+    operation_id = operation_url.split("/")[-1]
 
-    # check if the request was successful
-    if response.status_code != 202:
-        raise ValueError('Failed to submit the request. Expected 202, got {} ({})'.format(response.status_code, response.json()))
-
-    # get the operation location from the response headers
-    operation_location = response.headers['Operation-Location']
-
-    # poll the service until the operation is complete
+    # check the read operation status
     while True:
-        response = requests.get(operation_location, headers=headers)
-        if response.status_code != 200:
-            raise ValueError('Failed to fetch the result. Expected 200, got {} ({})'.format(response.status_code, response.json()))
-        response_json = response.json()
-        if response_json['status'] in ['succeeded', 'failed']:
+        response = requests.get(
+            url=operation_url,
+            headers={"Ocp-Apim-Subscription-Key": subscription_key}
+        )
+        status = response.json()["status"]
+        if status == "succeeded":
             break
+        elif status == "failed":
+            st.error("OCR operation failed")
+            return
 
-    # check if the operation was successful
-    if response_json['status'] == 'failed':
-        raise ValueError('The operation failed: {}'.format(response_json['analyzeResult']['errors']))
+    # extract the text from the result
+    result = response.json()
+    text = ""
+    for line in result["analyzeResult"]["readResults"][0]["lines"]:
+        text += line["text"] + " "
+    return text
 
-    # extract the text from the response
-    text = ''
-    pages = response_json['analyzeResult']['pageResults']
-    for page in pages:
-        for line in page['lines']:
-            for word in line['words']:
-                text += word['text'] + ' '
+# function to read text from a PDF file
+def ocr_pdf(file, endpoint, subscription_key):
+    with open(file, 'rb') as pdf_file:
+        pdf_bytes = pdf_file.read()
 
-    # return both the extracted text and the full JSON output
-    return text, response_json
+    response = requests.post(
+        url=endpoint + "/vision/v3.1-preview.3/read/analyze",
+        headers={
+            "Ocp-Apim-Subscription-Key": subscription_key,
+            "Content-Type": "application/pdf"
+        },
+        data=pdf_bytes
+    )
 
-# create a Streamlit app with a file upload widget
-st.title('Azure Form Recognizer Demo')
-file = st.file_uploader('Upload a PDF file')
+    operation_url = response.headers["Operation-Location"]
+    operation_id = operation_url.split("/")[-1]
 
-# when the user submits the file, extract the text and JSON output
+    # check the read operation status
+    while True:
+        response = requests.get(
+            url=operation_url,
+            headers={"Ocp-Apim-Subscription-Key": subscription_key}
+        )
+        status = response.json()["status"]
+        if status == "succeeded":
+            break
+        elif status == "failed":
+            st.error("OCR operation failed")
+            return
+
+    # extract the text from the result
+    result = response.json()
+    text = ""
+    for page in result["analyzeResult"]["readResults"]:
+        for line in page["lines"]:
+            text += line["text"] + " "
+    return text
+
+# create a file uploader for the user to select an image or PDF
+file = st.file_uploader("Upload file", type=["jpg", "jpeg", "png", "pdf"])
+
+# if a file has been uploaded
 if file is not None:
-    text, json_output = read_text(file)
-    st.write('Extracted text:', text)
-    st.write('JSON output:', json_output)
+    # if the file is an image
+    if file.type.split("/")[0] == "image":
+        # read the text from the image
+        text = ocr_image(file, endpoint, subscription_key)
+    # if the file is a PDF
+    elif file.type == "application/pdf":
+        # read the text from the PDF
+        text = ocr_pdf(file, endpoint, subscription_key)
+    # if the file is of an unsupported type
+    else:
+        st.error("Unsupported file type")
+        text = ""
+
+    # display the text
+    st.write(text)
